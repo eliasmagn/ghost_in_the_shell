@@ -1,3 +1,4 @@
+
 import sys
 import os
 import threading
@@ -14,7 +15,6 @@ from PySide6.QtWidgets import (
 from PySide6.QtCore import Qt, QTimer
 
 import docker
-
 GITS_QUOTES = [
     # Ghost in the Shell
     "The net is vast and infinite.",  # Ghost in the Shell (1995)
@@ -79,6 +79,9 @@ docker_client = docker.from_env()
 class GhostShellApp(QMainWindow):
     def __init__(self):
         super().__init__()
+        print(f"[DEBUG] Starte Ghost in the Shell GUI als User: {os.getlogin()} auf Platform: {sys.platform}")
+        print(f"[DEBUG] Python: {sys.executable} | Working Dir: {os.getcwd()}")
+
         self.setWindowTitle("Ghost in the Shell - Human-in-the-Loop KI Terminal")
         self.setGeometry(150, 100, 1000, 760)
         self.setStyleSheet(self.dark_theme_stylesheet())
@@ -109,14 +112,12 @@ class GhostShellApp(QMainWindow):
         v = QVBoxLayout()
         main.setLayout(v)
 
-        # --- TOP: Docker Image Auswahl und Modus ---
         h_top = QHBoxLayout()
         v.addLayout(h_top)
 
         self.image_label = QLabel("Docker-Image:")
         h_top.addWidget(self.image_label)
         self.image_combo = QComboBox()
-        # Default populäre Images
         self.image_combo.addItems(["ubuntu:24.04", "python:3.11-slim", "debian:bookworm", "alpine:latest"])
         self.image_combo.setEditable(True)
         h_top.addWidget(self.image_combo)
@@ -136,14 +137,12 @@ class GhostShellApp(QMainWindow):
         h_top.addWidget(self.allow_all_switch)
         v.addSpacing(5)
 
-        # --- Session Info ---
         self.session_info = QLabel("Session: [Keine]")
         self.container_status = QLabel("Container-Status: [Gestoppt]")
         v.addWidget(self.session_info)
         v.addWidget(self.container_status)
         v.addSpacing(8)
 
-        # --- Pending Command ---
         self.pending_label = QLabel("Pending Command:")
         v.addWidget(self.pending_label)
         self.pending_command_edit = QLineEdit("")
@@ -160,7 +159,6 @@ class GhostShellApp(QMainWindow):
         v.addLayout(h_pending)
         v.addSpacing(8)
 
-        # --- Terminal Output ---
         self.terminal_label = QLabel("Terminalausgabe:")
         v.addWidget(self.terminal_label)
         self.terminal_output = QTextEdit()
@@ -168,7 +166,6 @@ class GhostShellApp(QMainWindow):
         self.terminal_output.setStyleSheet("background: #14181b; color: #b3f1ff; font-family: 'Fira Mono', 'Consolas', monospace; font-size: 15px;")
         v.addWidget(self.terminal_output, 2)
 
-        # --- Easter Egg Overlay ---
         self.quote_overlay = QLabel(self)
         self.quote_overlay.setStyleSheet(
             "background: rgba(30,35,45,210); color: #44ffd1; font-size: 17px; border-radius:14px; padding: 10px;"
@@ -193,7 +190,7 @@ class GhostShellApp(QMainWindow):
         self.quote_overlay.setText(txt)
         self.adjust_quote_overlay()
         self.quote_overlay.setVisible(True)
-        self.quote_timer.start(3400)  # Anzeige für 3,4 Sekunden
+        self.quote_timer.start(3400)
 
     def toggle_allow_all(self, state):
         self.allow_all = state == Qt.Checked
@@ -212,14 +209,17 @@ class GhostShellApp(QMainWindow):
         try:
             self.container_status.setText(f"Container wird gestartet: {image}")
             self.repaint()
+            print(f"[DEBUG] Starte Docker-Container: {image} (Name: {name})")
             container = docker_client.containers.run(
                 image, "/bin/bash", tty=True, stdin_open=True, detach=True, name=name
             )
             self.current_container = container
             self.session_status = "ready"
+            print(f"[DEBUG] Container erfolgreich gestartet: {container.id}")
             self.show_quote(random.choice(GITS_QUOTES))
         except Exception as e:
             QMessageBox.critical(self, "Fehler", f"Container konnte nicht gestartet werden:\n{e}")
+            print(f"[ERROR] Container konnte nicht gestartet werden: {e}")
             self.current_container = None
             self.session_status = "idle"
         self.update_ui()
@@ -230,8 +230,9 @@ class GhostShellApp(QMainWindow):
             return
         try:
             self.current_container.remove(force=True)
-        except Exception:
-            pass
+            print("[DEBUG] Container wurde gestoppt und entfernt.")
+        except Exception as e:
+            print(f"[ERROR] Container konnte nicht entfernt werden: {e}")
         self.current_container = None
         self.session_status = "idle"
         self.terminal_output.clear()
@@ -240,8 +241,10 @@ class GhostShellApp(QMainWindow):
 
     def update_ui(self):
         if self.current_container:
+            tag = (self.current_container.image.tags[0]
+                   if self.current_container.image.tags else "?")
             self.container_status.setText(
-                f"Container-Status: Läuft ({self.current_container.name}, Image: {self.current_container.image.tags[0] if self.current_container.image.tags else '?'})"
+                f"Container-Status: Läuft ({self.current_container.name}, Image: {tag})"
             )
         else:
             self.container_status.setText("Container-Status: [Gestoppt]")
@@ -261,10 +264,9 @@ class GhostShellApp(QMainWindow):
         if not self.current_container:
             QMessageBox.critical(self, "Kein Container", "Bitte zuerst einen Container starten!")
             return
-        # --- Führe Befehl im Container aus ---
+        print(f"[DEBUG] Befehl bestätigt: {self.pending_command}")
         output = self.run_command_in_container(self.pending_command)
         self.terminal_output.append(f"> {self.pending_command}\n{output}\n")
-        # Antwort an Skill
         send_json(self.pending_conn, {
             "status": "approved",
             "output": output
@@ -277,6 +279,7 @@ class GhostShellApp(QMainWindow):
     def reject_pending(self):
         if not self.pending_command or not self.pending_conn:
             return
+        print(f"[DEBUG] Befehl abgelehnt: {self.pending_command}")
         send_json(self.pending_conn, {
             "status": "rejected",
             "output": ""
@@ -292,38 +295,56 @@ class GhostShellApp(QMainWindow):
         try:
             exec_id = docker_client.api.exec_create(self.current_container.id, command, tty=True)
             output = docker_client.api.exec_start(exec_id, tty=True).decode(errors="ignore")
+            print(f"[DEBUG] Ausgabe für '{command}':\n{output}")
             return output
         except Exception as e:
+            print(f"[ERROR] Fehler beim Ausführen von '{command}': {e}")
             return f"Fehler: {e}"
 
     def socket_server(self):
         # Starte lokalen Socket-Server (Blocking, Thread)
-        if SOCKET_TYPE == "unix":
-            if os.path.exists(SOCKET_PATH):
-                os.remove(SOCKET_PATH)
-            s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
-            s.bind(SOCKET_PATH)
-            os.chmod(SOCKET_PATH, 0o600)
-        elif SOCKET_TYPE == "tcp":
-            s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-            s.bind((SOCKET_HOST, SOCKET_PORT))
-        else:
-            raise Exception("Unbekannter Socket-Typ!")
-        s.listen(5)
-        print(f"Socket Server läuft: {SOCKET_PATH or (SOCKET_HOST, SOCKET_PORT)}")
+        try:
+            if SOCKET_TYPE == "unix":
+                if os.path.exists(SOCKET_PATH):
+                    try:
+                        os.remove(SOCKET_PATH)
+                    except Exception as e:
+                        print(f"[ERROR] Konnte alten Socket nicht entfernen: {e}")
+                s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+                s.bind(SOCKET_PATH)
+                os.chmod(SOCKET_PATH, 0o600)
+                print(f"[DEBUG] Unix-Socket wird angelegt unter: {SOCKET_PATH}")
+            elif SOCKET_TYPE == "tcp":
+                s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                s.bind((SOCKET_HOST, SOCKET_PORT))
+                print(f"[DEBUG] TCP-Socket wird gestartet unter {SOCKET_HOST}:{SOCKET_PORT}")
+            else:
+                print("[DEBUG] Unbekannter Socket-Typ!")
+                return
+            s.listen(5)
+            print(f"[DEBUG] Socket Server läuft und wartet auf Verbindungen.")
+        except Exception as e:
+            print(f"[ERROR] Socket konnte nicht angelegt werden: {e}")
+            print("Möglicherweise läuft bereits eine andere Instanz der Ghostshell-GUI.")
+            return
+
         while True:
             conn, _ = s.accept()
+            print(f"[DEBUG] Neue Verbindung am Socket erhalten.")
             threading.Thread(target=self.handle_skill_request, args=(conn,), daemon=True).start()
 
     def handle_skill_request(self, conn):
         try:
             data = recv_json(conn)
-            if not data: return
+            if not data:
+                print(f"[DEBUG] Leere oder ungültige Anfrage empfangen.")
+                return
+            print(f"[DEBUG] Anfrage empfangen: {data}")
             session = data.get("session")
             command = data.get("command")
             if not session or not command:
+                print(f"[DEBUG] Ungültige Anfrage: session oder command fehlt.")
                 return
-            # Handling Allow All/Deny All:
             self.current_session = session
             if self.allow_all:
                 if not self.current_container:
@@ -336,14 +357,13 @@ class GhostShellApp(QMainWindow):
                 send_json(conn, {"status": "approved", "output": output})
                 self.show_quote(random.choice(GITS_QUOTES))
                 return
-            # Nur ein pending command zulassen!
             if self.pending_command is not None:
                 send_json(conn, {"status": "rejected", "output": "Warte auf Bestätigung des vorherigen Befehls."})
+                print("[DEBUG] Zweiter Befehl abgelehnt (pending).")
                 return
             self.pending_command = command
             self.pending_conn = conn
             self.update_ui()
-            # Blockiere bis Aktion (approve/reject)
             while self.pending_command is not None:
                 time.sleep(0.2)
             try:
@@ -351,9 +371,8 @@ class GhostShellApp(QMainWindow):
             except:
                 pass
         except Exception as e:
-            print("Fehler beim Handle Skill:", e)
+            print("[ERROR] Fehler beim Handle Skill:", e)
 
-# --- JSON Hilfe ---
 def send_json(sock, obj):
     msg = json.dumps(obj).encode() + b"\n"
     try:
@@ -373,7 +392,6 @@ def recv_json(sock):
     except Exception:
         return None
 
-# --- Start ---
 if __name__ == "__main__":
     app = QApplication(sys.argv)
     win = GhostShellApp()
