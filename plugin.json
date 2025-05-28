@@ -1,0 +1,33 @@
+{
+  "hubId": "ghost_in_the_shell",
+  "active": true,
+  "name": "ghost in the shell",
+  "version": "1.0.0",
+  "schema": "skill-1.0.0",
+  "description": "Leitet Shell-Kommandos von AnythingLLM an eine lokale Docker-Terminal-App weiter, die alle Kommandos erst nach Benutzerfreigabe im Container ausführt.",
+  "author": "Dein Name",
+  "license": "MIT",
+  "examples": [
+    {
+      "prompt": "Führe 'ls -l' in der Session abc123 aus",
+      "call": "{\"sessionId\": \"abc123\", \"command\": \"ls -l\"}"
+    },
+    {
+      "prompt": "Führe 'apt update' aus",
+      "call": "{\"sessionId\": \"xyz789\", \"command\": \"apt update\"}"
+    }
+  ],
+  "entrypoint": {
+    "file": "handler.js",
+    "params": {
+      "sessionId": {
+        "type": "string",
+        "description": "Session-Id für den Container-Terminal-Kontext"
+      },
+      "command": {
+        "type": "string",
+        "description": "Shell-Befehl, der ausgeführt werden soll"
+      }
+    }
+  }
+}
