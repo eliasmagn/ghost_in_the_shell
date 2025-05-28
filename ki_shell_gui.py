@@ -8,25 +8,12 @@ import time
 import random
 
 from PySide6.QtWidgets import (
-    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel, QPushButton, QTextEdit, QListWidget, QListWidgetItem, QMessageBox
+    QApplication, QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QLabel,
+    QPushButton, QTextEdit, QLineEdit, QComboBox, QMessageBox, QCheckBox
 )
 from PySide6.QtCore import Qt, QTimer
 
 import docker
-import pty
-
-if sys.platform == "win32":
-    SOCKET_TYPE = "tcp"
-    SOCKET_HOST = "127.0.0.1"
-    SOCKET_PORT = 8777
-    SOCKET_PATH = None
-else:
-    SOCKET_TYPE = "unix"
-    SOCKET_PATH = "/tmp/ki_shell.sock"
-    SOCKET_HOST = None
-    SOCKET_PORT = None
-
-docker_client = docker.from_env()
 
 GITS_QUOTES = [
     # Ghost in the Shell
@@ -74,156 +61,240 @@ GITS_QUOTES = [
     "We exist without skin color, without nationality, without religious bias.",  # Hacker Manifesto
 ]
 
-class PendingCommand:
-    def __init__(self, session, command, from_skill):
-        self.session = session
-        self.command = command
-        self.from_skill = from_skill  # socket object
-        self.status = "pending"
-        self.output = ""
+# --------- Socket/OS-Handling ---------
+if sys.platform == "win32":
+    SOCKET_TYPE = "tcp"
+    SOCKET_HOST = "127.0.0.1"
+    SOCKET_PORT = 8777
+    SOCKET_PATH = None
+else:
+    SOCKET_TYPE = "unix"
+    SOCKET_PATH = "/tmp/ki_shell.sock"
+    SOCKET_HOST = None
+    SOCKET_PORT = None
 
-class KIShellApp(QMainWindow):
+docker_client = docker.from_env()
+
+# --------- Main App ---------
+class GhostShellApp(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Human-in-the-Loop Shell (KI Terminal Control)")
-        self.setGeometry(100, 100, 1000, 700)
-        self.pending_commands = []
-        self.docker_sessions = {}  # session -> (pty_fd, pid, container)
+        self.setWindowTitle("Ghost in the Shell - Human-in-the-Loop KI Terminal")
+        self.setGeometry(150, 100, 1000, 760)
+        self.setStyleSheet(self.dark_theme_stylesheet())
+        self.current_container = None
+        self.current_session = None
+        self.pending_command = None
+        self.pending_conn = None
+        self.allow_all = False
+        self.session_status = "idle"
         self.setup_ui()
-        self.timer = QTimer()
-        self.quote_overlay = QLabel(self)
-        self.quote_overlay.setStyleSheet(
-            "background: rgba(20,20,20, 200); color: #66ffff; font-size: 16px; border-radius:10px; padding: 10px;"
-        )
-        self.quote_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.quote_overlay.setVisible(False)
-        self.quote_overlay.setFixedHeight(40)
-        self.quote_overlay.raise_()
-
+        threading.Thread(target=self.socket_server, daemon=True).start()
         self.quote_timer = QTimer()
         self.quote_timer.setSingleShot(True)
         self.quote_timer.timeout.connect(lambda: self.quote_overlay.setVisible(False))
 
-        self.timer.timeout.connect(self.refresh_pending_list)
-        self.timer.start(1000)
-        threading.Thread(target=self.socket_server, daemon=True).start()
+    def dark_theme_stylesheet(self):
+        return """
+        QWidget { background: #171a1d; color: #e3e8ee; font-family: "Fira Mono", "Consolas", monospace; font-size: 16px; }
+        QTextEdit, QLineEdit, QComboBox { background: #262a2e; color: #e3e8ee; border-radius: 8px; padding: 4px; }
+        QPushButton { background: #212529; color: #59d6ff; border: none; border-radius: 8px; padding: 8px 18px; font-size: 17px; }
+        QPushButton:hover { background: #30363c; }
+        QLabel { color: #b1f1ff; }
+        QCheckBox { color: #7ccfff; }
+        """
 
     def setup_ui(self):
         main = QWidget()
         v = QVBoxLayout()
         main.setLayout(v)
 
-        # Pending commands
-        self.pending_list = QListWidget()
-        v.addWidget(QLabel("Ausstehende Kommandos von AnythingLLM:"))
-        v.addWidget(self.pending_list, 1)
+        # --- TOP: Docker Image Auswahl und Modus ---
+        h_top = QHBoxLayout()
+        v.addLayout(h_top)
 
-        h = QHBoxLayout()
-        self.approve_btn = QPushButton("Bestätigen & Ausführen")
+        self.image_label = QLabel("Docker-Image:")
+        h_top.addWidget(self.image_label)
+        self.image_combo = QComboBox()
+        # Default populäre Images
+        self.image_combo.addItems(["ubuntu:24.04", "python:3.11-slim", "debian:bookworm", "alpine:latest"])
+        self.image_combo.setEditable(True)
+        h_top.addWidget(self.image_combo)
+
+        self.start_container_btn = QPushButton("Container starten")
+        self.start_container_btn.clicked.connect(self.start_container)
+        h_top.addWidget(self.start_container_btn)
+
+        self.stop_container_btn = QPushButton("Stoppen/Löschen")
+        self.stop_container_btn.clicked.connect(self.stop_container)
+        h_top.addWidget(self.stop_container_btn)
+
+        h_top.addStretch(1)
+
+        self.allow_all_switch = QCheckBox("Allow All")
+        self.allow_all_switch.stateChanged.connect(self.toggle_allow_all)
+        h_top.addWidget(self.allow_all_switch)
+        v.addSpacing(5)
+
+        # --- Session Info ---
+        self.session_info = QLabel("Session: [Keine]")
+        self.container_status = QLabel("Container-Status: [Gestoppt]")
+        v.addWidget(self.session_info)
+        v.addWidget(self.container_status)
+        v.addSpacing(8)
+
+        # --- Pending Command ---
+        self.pending_label = QLabel("Pending Command:")
+        v.addWidget(self.pending_label)
+        self.pending_command_edit = QLineEdit("")
+        self.pending_command_edit.setReadOnly(True)
+        v.addWidget(self.pending_command_edit)
+
+        h_pending = QHBoxLayout()
+        self.approve_btn = QPushButton("Erlauben & Ausführen")
+        self.approve_btn.clicked.connect(self.approve_pending)
         self.reject_btn = QPushButton("Ablehnen")
-        self.term_btn = QPushButton("Terminal anzeigen")
-        h.addWidget(self.approve_btn)
-        h.addWidget(self.reject_btn)
-        h.addWidget(self.term_btn)
-        v.addLayout(h)
+        self.reject_btn.clicked.connect(self.reject_pending)
+        h_pending.addWidget(self.approve_btn)
+        h_pending.addWidget(self.reject_btn)
+        v.addLayout(h_pending)
+        v.addSpacing(8)
 
+        # --- Terminal Output ---
+        self.terminal_label = QLabel("Terminalausgabe:")
+        v.addWidget(self.terminal_label)
         self.terminal_output = QTextEdit()
         self.terminal_output.setReadOnly(True)
-        v.addWidget(QLabel("Terminalausgabe:"))
+        self.terminal_output.setStyleSheet("background: #14181b; color: #b3f1ff; font-family: 'Fira Mono', 'Consolas', monospace; font-size: 15px;")
         v.addWidget(self.terminal_output, 2)
 
-        self.setCentralWidget(main)
+        # --- Easter Egg Overlay ---
+        self.quote_overlay = QLabel(self)
+        self.quote_overlay.setStyleSheet(
+            "background: rgba(30,35,45,210); color: #44ffd1; font-size: 17px; border-radius:14px; padding: 10px;"
+        )
+        self.quote_overlay.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.quote_overlay.setVisible(False)
+        self.quote_overlay.setFixedHeight(42)
+        self.quote_overlay.raise_()
         self.resizeEvent = self.adjust_quote_overlay
-        self.approve_btn.clicked.connect(self.approve_selected)
-        self.reject_btn.clicked.connect(self.reject_selected)
-        self.term_btn.clicked.connect(self.show_terminal_selected)
 
-    def refresh_pending_list(self):
-        self.pending_list.clear()
-        for cmd in self.pending_commands:
-            item = QListWidgetItem(f"Session: {cmd.session} | Kommando: {cmd.command} | Status: {cmd.status}")
-            self.pending_list.addItem(item)
+        self.setCentralWidget(main)
+        self.update_ui()
 
-    def get_selected(self):
-        idx = self.pending_list.currentRow()
-        if idx < 0 or idx >= len(self.pending_commands):
-            return None
-        return self.pending_commands[idx]
+    def adjust_quote_overlay(self, event=None):
+        w = self.width()
+        h = self.height()
+        self.quote_overlay.setGeometry(
+            int(w/2 - (w-40)/2), h - 70, w-40, 42
+        )
 
-    def approve_selected(self):
-        cmd = self.get_selected()
-        if not cmd or cmd.status != "pending":
+    def show_quote(self, txt):
+        self.quote_overlay.setText(txt)
+        self.adjust_quote_overlay()
+        self.quote_overlay.setVisible(True)
+        self.quote_timer.start(3400)  # Anzeige für 3,4 Sekunden
+
+    def toggle_allow_all(self, state):
+        self.allow_all = state == Qt.Checked
+        if self.allow_all:
+            self.show_quote("ALLOW ALL: KI darf jetzt direkt Befehle senden.")
+
+    def start_container(self):
+        if self.current_container is not None:
+            QMessageBox.warning(self, "Achtung", "Container läuft bereits!")
             return
-        output, ok = self.run_command_in_docker(cmd.session, cmd.command)
-        cmd.output = output
-        cmd.status = "approved"
-        self.terminal_output.setPlainText(output)
-        self.show_quote(random.choice(GITS_QUOTES))
-       # Antwort zurück an Skill
+        image = self.image_combo.currentText().strip()
+        if not image:
+            QMessageBox.warning(self, "Fehler", "Bitte Docker-Image wählen oder eingeben.")
+            return
+        name = f"ghostshell_{random.randint(100000, 999999)}"
         try:
-            answer = {
-                "session": cmd.session,
-                "status": "approved",
-                "output": output
-            }
-            send_json(cmd.from_skill, answer)
-        except Exception as e:
-            print("Antwort an Skill fehlgeschlagen:", e)
-
-    def reject_selected(self):
-        cmd = self.get_selected()
-        if not cmd or cmd.status != "pending":
-            return
-        cmd.status = "rejected"
-        self.show_quote(random.choice(GITS_QUOTES))
-        try:
-            answer = {
-                "session": cmd.session,
-                "status": "rejected",
-                "output": ""
-            }
-            send_json(cmd.from_skill, answer)
-        except Exception as e:
-            print("Antwort an Skill fehlgeschlagen:", e)
-
-    def show_terminal_selected(self):
-        cmd = self.get_selected()
-        if not cmd or cmd.status == "pending":
-            QMessageBox.warning(self, "Nicht möglich", "Bitte zuerst ausführen.")
-            return
-        self.terminal_output.setPlainText(cmd.output)
-
-    def run_command_in_docker(self, session, command):
-        # Falls Session/Container existiert: weiterverwenden, sonst starten
-        if session not in self.docker_sessions:
-            # Neues Container mit /bin/bash
+            self.container_status.setText(f"Container wird gestartet: {image}")
+            self.repaint()
             container = docker_client.containers.run(
-                "ubuntu:24.04", "/bin/bash", tty=True, stdin_open=True, detach=True, remove=True
+                image, "/bin/bash", tty=True, stdin_open=True, detach=True, name=name
             )
-            pid, fd = pty.fork()
-            if pid == 0:
-                os.execvp("docker", ["docker", "exec", "-it", container.id, "/bin/bash"])
-            self.docker_sessions[session] = (fd, pid, container)
-            time.sleep(1)  # Gebe dem PTY Zeit für Bash
+            self.current_container = container
+            self.session_status = "ready"
+            self.show_quote(random.choice(GITS_QUOTES))
+        except Exception as e:
+            QMessageBox.critical(self, "Fehler", f"Container konnte nicht gestartet werden:\n{e}")
+            self.current_container = None
+            self.session_status = "idle"
+        self.update_ui()
 
-        fd, pid, container = self.docker_sessions[session]
-        # Schreibe Befehl rein
-        os.write(fd, (command + "\n").encode())
-        # Lese Output für max 3 Sekunden (vereinfachtes Capturing)
-        output = b""
-        t0 = time.time()
-        while time.time() - t0 < 3:
-            r, _, _ = select.select([fd], [], [], 0.2)
-            if fd in r:
-                try:
-                    data = os.read(fd, 4096)
-                    if not data: break
-                    output += data
-                except OSError:
-                    break
-            else:
-                break
-        return output.decode(errors="ignore"), True
+    def stop_container(self):
+        if self.current_container is None:
+            QMessageBox.information(self, "Kein Container", "Es läuft kein Container.")
+            return
+        try:
+            self.current_container.remove(force=True)
+        except Exception:
+            pass
+        self.current_container = None
+        self.session_status = "idle"
+        self.terminal_output.clear()
+        self.show_quote("Container gestoppt.")
+        self.update_ui()
+
+    def update_ui(self):
+        if self.current_container:
+            self.container_status.setText(
+                f"Container-Status: Läuft ({self.current_container.name}, Image: {self.current_container.image.tags[0] if self.current_container.image.tags else '?'})"
+            )
+        else:
+            self.container_status.setText("Container-Status: [Gestoppt]")
+        self.session_info.setText(f"Session: {self.current_session if self.current_session else '[Keine]'}")
+        if self.pending_command:
+            self.pending_command_edit.setText(self.pending_command)
+            self.approve_btn.setEnabled(True)
+            self.reject_btn.setEnabled(True)
+        else:
+            self.pending_command_edit.clear()
+            self.approve_btn.setEnabled(False)
+            self.reject_btn.setEnabled(False)
+
+    def approve_pending(self):
+        if not self.pending_command or not self.pending_conn:
+            return
+        if not self.current_container:
+            QMessageBox.critical(self, "Kein Container", "Bitte zuerst einen Container starten!")
+            return
+        # --- Führe Befehl im Container aus ---
+        output = self.run_command_in_container(self.pending_command)
+        self.terminal_output.append(f"> {self.pending_command}\n{output}\n")
+        # Antwort an Skill
+        send_json(self.pending_conn, {
+            "status": "approved",
+            "output": output
+        })
+        self.show_quote(random.choice(GITS_QUOTES))
+        self.pending_command = None
+        self.pending_conn = None
+        self.update_ui()
+
+    def reject_pending(self):
+        if not self.pending_command or not self.pending_conn:
+            return
+        send_json(self.pending_conn, {
+            "status": "rejected",
+            "output": ""
+        })
+        self.show_quote("Access Denied.")
+        self.pending_command = None
+        self.pending_conn = None
+        self.update_ui()
+
+    def run_command_in_container(self, command):
+        if not self.current_container:
+            return "Kein Container gestartet!"
+        try:
+            exec_id = docker_client.api.exec_create(self.current_container.id, command, tty=True)
+            output = docker_client.api.exec_start(exec_id, tty=True).decode(errors="ignore")
+            return output
+        except Exception as e:
+            return f"Fehler: {e}"
 
     def socket_server(self):
         # Starte lokalen Socket-Server (Blocking, Thread)
@@ -252,11 +323,29 @@ class KIShellApp(QMainWindow):
             command = data.get("command")
             if not session or not command:
                 return
-            cmd = PendingCommand(session, command, conn)
-            self.pending_commands.append(cmd)
-            while cmd.status == "pending":
+            # Handling Allow All/Deny All:
+            self.current_session = session
+            if self.allow_all:
+                if not self.current_container:
+                    self.start_container()
+                    if not self.current_container:
+                        send_json(conn, {"status": "rejected", "output": "Container konnte nicht gestartet werden."})
+                        return
+                output = self.run_command_in_container(command)
+                self.terminal_output.append(f"> {command}\n{output}\n")
+                send_json(conn, {"status": "approved", "output": output})
+                self.show_quote(random.choice(GITS_QUOTES))
+                return
+            # Nur ein pending command zulassen!
+            if self.pending_command is not None:
+                send_json(conn, {"status": "rejected", "output": "Warte auf Bestätigung des vorherigen Befehls."})
+                return
+            self.pending_command = command
+            self.pending_conn = conn
+            self.update_ui()
+            # Blockiere bis Aktion (approve/reject)
+            while self.pending_command is not None:
                 time.sleep(0.2)
-            time.sleep(1)
             try:
                 conn.close()
             except:
@@ -264,35 +353,13 @@ class KIShellApp(QMainWindow):
         except Exception as e:
             print("Fehler beim Handle Skill:", e)
 
-    GITS_QUOTES = [
-        "The net is vast and infinite.",
-        "If we all reacted the same way, we'd be predictable, and there's always more than one way to view a situation.",
-        "Your effort to remain what you are is what limits you.",
-        "I am connected to a vast network, of which I myself am a part.",
-        "What we see now is like a dim image in a mirror.",
-        "I guess once you start doubting, there's no end to it."
-    ]
-
-    def show_quote(self, txt):
-        self.quote_overlay.setText(txt)
-        self.adjust_quote_overlay()
-        self.quote_overlay.setVisible(True)
-        self.quote_timer.start(3200)  # Anzeige für 3,2 Sekunden
-
-    def adjust_quote_overlay(self, event=None):
-        # Always keep at bottom-center
-        w = self.width()
-        h = self.height()
-        self.quote_overlay.setGeometry(
-            int(w/2 - self.quote_overlay.width()/2),
-            h - 60,
-            w - 40, 40
-        )
-
-
+# --- JSON Hilfe ---
 def send_json(sock, obj):
     msg = json.dumps(obj).encode() + b"\n"
-    sock.sendall(msg)
+    try:
+        sock.sendall(msg)
+    except Exception:
+        pass
 
 def recv_json(sock):
     buf = b""
@@ -306,8 +373,9 @@ def recv_json(sock):
     except Exception:
         return None
 
+# --- Start ---
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    win = KIShellApp()
+    win = GhostShellApp()
     win.show()
     app.exec()
