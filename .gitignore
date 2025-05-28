@@ -4,4 +4,6 @@ __pycache__/
 tmp/
 .DS_Store
 ki_shell.sock
-
+frontend/node_modules
+frontend/dist
+frontend/package-lock.json

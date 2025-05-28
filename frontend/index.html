@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Ghost in the Shell Terminal</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+  <style>
+    body { margin:0; padding:0; background:#181c1f; }
+    #terminal { width: 100vw; height: 100vh; }
+    #ki-bar {
+      position: absolute; left: 16px; top: 12px; background: #222c; color: #5ec3ff;
+      border-radius: 9px; padding: 6px 18px; z-index: 1000; font-size: 1.08em; display: none;
+    }
+    #ki-bar.active { display: block; }
+    #approve, #reject {
+      margin-left: 10px; background: #133d4c; color: #c6ffe6; border: none; border-radius: 6px; padding: 4px 12px;
+    }
+    #approve:hover, #reject:hover { background: #19706a; color: #fff; }
+  </style>
+</head>
+<body>
+  <div id="terminal"></div>
+  <div id="ki-bar">
+    KI Suggestion: <span id="ki-cmd"></span>
+    <button id="approve">Insert</button>
+    <button id="reject">Reject</button>
+  </div>
+  <script type="module" src="/main.js"></script>
+</body>
+</html>

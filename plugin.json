@@ -2,11 +2,10 @@
   "hubId": "ghost_in_the_shell",
   "active": true,
   "name": "Ghost in the Shell Terminal",
-  "version": "1.0.0",
+  "version": "3.0.0",
   "schema": "skill-1.0.0",
-  "description": "A human-in-the-loop terminal skill for AnythingLLM. All shell commands from the AI are routed to a GUI for user approval and execution inside a Docker container. Features allow/deny modes, Docker image selection, live terminal output, and memorable quotes from cyberpunk and hacker movies.",
+  "description": "Human-in-the-loop terminal for AnythingLLM. Full Bash (and TUI) support in a real terminal. KI suggestions appear as overlays and are only executed if approved. Fully supports ncurses apps like htop, vim, nano, etc.",
   "author": "Elias",
-  "author_url": "",
   "license": "MIT",
   "examples": [
     {
@@ -14,12 +13,8 @@
       "call": "{}"
     },
     {
-      "prompt": "starte ghost in the shell terminal",
-      "call": "{}"
-    },
-    {
-      "prompt": "führe in ghostshell 'ls -l' aus",
-      "call": "{\"sessionId\": \"SESSIONID\", \"command\": \"ls -l\"}"
+      "prompt": "Führe 'apt update' als KI-Vorschlag aus",
+      "call": "{\"command\": \"apt update\"}"
     }
   ],
   "entrypoint": {
@@ -27,11 +22,11 @@
     "params": {
       "sessionId": {
         "type": "string",
-        "description": "Unique session ID for the shell container"
+        "description": "Session ID for the terminal"
       },
       "command": {
         "type": "string",
-        "description": "Shell command to execute"
+        "description": "KI command (shown as a suggestion, never auto-executed)"
       }
     }
   }
