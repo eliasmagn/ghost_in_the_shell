@@ -1,31 +1,74 @@
 <!DOCTYPE html>
-<html lang="en">
+<html>
 <head>
-  <meta charset="UTF-8" />
-  <title>Ghost in the Shell Terminal</title>
-  <meta name="viewport" content="width=device-width,initial-scale=1">
-  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm/css/xterm.css" />
+  <meta charset="utf-8">
+  <title>GhostShell Terminal</title>
   <style>
-    body { margin:0; padding:0; background:#181c1f; }
-    #terminal { width: 100vw; height: 100vh; }
-    #ki-bar {
-      position: absolute; left: 16px; top: 12px; background: #222c; color: #5ec3ff;
-      border-radius: 9px; padding: 6px 18px; z-index: 1000; font-size: 1.08em; display: none;
+    html, body { height: 100%; margin:0; padding:0; background: #171a1d;}
+    #terminal { width: 100%; height: 100vh; }
+    .suggestion-bar {
+      background: #22313a; color: #eee; font-family: monospace;
+      padding: 8px 14px; border-radius: 7px; margin: 0 8px 10px 8px;
+      display: none; align-items: center; gap: 8px;
     }
-    #ki-bar.active { display: block; }
-    #approve, #reject {
-      margin-left: 10px; background: #133d4c; color: #c6ffe6; border: none; border-radius: 6px; padding: 4px 12px;
-    }
-    #approve:hover, #reject:hover { background: #19706a; color: #fff; }
+    .suggestion-bar.visible { display: flex; }
+    .suggestion-btn { background: #333; color: #59f; border: none; border-radius: 5px; margin-left: 8px; padding: 4px 15px; }
+    .suggestion-btn:hover { background: #344666; }
   </style>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/xterm@5.3.0/css/xterm.css" />
 </head>
 <body>
-  <div id="terminal"></div>
-  <div id="ki-bar">
-    KI Suggestion: <span id="ki-cmd"></span>
-    <button id="approve">Insert</button>
-    <button id="reject">Reject</button>
+  <div class="suggestion-bar" id="suggestionBar">
+    <span id="suggestionText"></span>
+    <button class="suggestion-btn" onclick="acceptSuggestion()">Erlauben & Einfügen</button>
+    <button class="suggestion-btn" onclick="rejectSuggestion()">Ablehnen</button>
   </div>
-  <script type="module" src="/main.js"></script>
+  <div id="terminal"></div>
+  <script src="https://cdn.jsdelivr.net/npm/xterm@5.3.0/lib/xterm.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-attach@0.8.0/lib/xterm-addon-attach.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/xterm-addon-fit@0.8.0/lib/xterm-addon-fit.js"></script>
+  <script>
+    const term = new window.Terminal({ fontFamily: "Fira Mono, monospace", theme: {background:"#171a1d"} });
+    const fitAddon = new window.FitAddon.FitAddon();
+    term.loadAddon(fitAddon);
+
+    // Connect to WebSocket (backend)
+    let socket = new WebSocket("ws://127.0.0.1:8765");
+    socket.onopen = () => {
+      fitAddon.fit();
+      term.focus();
+    };
+    socket.onmessage = function(ev) {
+      term.write(ev.data);
+    };
+    term.onData(data => {
+      socket.send(data);
+    });
+    term.open(document.getElementById("terminal"));
+    fitAddon.fit();
+
+    // Suggestion overlay logic
+    window.setKICmd = function(cmd) {
+      const bar = document.getElementById("suggestionBar");
+      document.getElementById("suggestionText").innerText = cmd;
+      bar.classList.add("visible");
+      window.pendingKICmd = cmd;
+    };
+    window.termWrite = function(line) {
+      term.write(line);
+    }
+    window.acceptSuggestion = function() {
+      if (window.pendingKICmd) {
+        term.write(window.pendingKICmd + "\n");
+        document.getElementById("suggestionBar").classList.remove("visible");
+        window.pendingKICmd = "";
+      }
+    }
+    window.rejectSuggestion = function() {
+      document.getElementById("suggestionBar").classList.remove("visible");
+      window.pendingKICmd = "";
+    }
+  </script>
 </body>
 </html>
+

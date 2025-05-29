@@ -1,72 +1,43 @@
-import asyncio
 import os
 import sys
-import pty
+import asyncio
 import docker
-import threading
-import subprocess
-import websockets
+from terminalsrv.server import Server
 
-DOCKER_IMAGE = os.environ.get("GHOSTSHELL_IMAGE", "ubuntu:24.04")
-CONTAINER_NAME = os.environ.get("GHOSTSHELL_CONTAINER", "ghostshell_1")
-SHELL = "/bin/bash"
+# Set Docker container name from env or default
+CONTAINER = os.environ.get("GHOSTSHELL_CONTAINER", "ghostshell_main")
+IMAGE = os.environ.get("GHOSTSHELL_IMAGE", "python:3.11-slim")
+PORT = int(os.environ.get("GHOSTSHELL_PORT", 8765))
 
-def get_or_create_container(image, name):
-    client = docker.from_env()
+client = docker.from_env()
+
+# Ensure container is running
+def ensure_container():
     try:
-        container = client.containers.get(name)
-        if container.status != 'running':
-            container.start()
-        return container
+        c = client.containers.get(CONTAINER)
+        if c.status != "running":
+            c.start()
     except docker.errors.NotFound:
-        return client.containers.run(
-            image,
-            command=SHELL,
-            tty=True,
-            stdin_open=True,
-            detach=True,
-            name=name
+        # Create new container
+        c = client.containers.run(
+            IMAGE, "/bin/bash", tty=True, stdin_open=True, detach=True, name=CONTAINER
         )
+    return c
 
-async def handler(websocket, path):
-    # Prepare Docker container
-    image = os.environ.get("GHOSTSHELL_IMAGE", DOCKER_IMAGE)
-    name = os.environ.get("GHOSTSHELL_CONTAINER", CONTAINER_NAME)
-    container = get_or_create_container(image, name)
+container = ensure_container()
 
-    # Use docker exec to start a PTY inside the running container
-    exec_id = container.client.api.exec_create(
-        container.id, 
-        cmd=SHELL,
-        tty=True,
-        stdin=True
-    )['Id']
-    sock = container.client.api.exec_start(exec_id, tty=True, detach=False, socket=True)
+# Patch command to run as docker exec!
+def docker_shell_cmd():
+    return [
+        "docker", "exec", "-it", CONTAINER, "/bin/bash"
+    ]
 
-    async def read_pty():
-        while True:
-            await asyncio.sleep(0.01)
-            try:
-                data = sock.recv(1024)
-                if data:
-                    await websocket.send(data.decode(errors="ignore"))
-            except Exception:
-                break
-
-    async def write_pty():
-        async for msg in websocket:
-            try:
-                sock.send(msg.encode())
-            except Exception:
-                break
-
-    await asyncio.gather(read_pty(), write_pty())
-    sock.close()
+# Monkeypatch terminalsrv to use docker exec instead of /bin/bash
+orig_get_shell = Server.get_shell
+def get_shell(self, *a, **k):
+    return docker_shell_cmd()
+Server.get_shell = get_shell
 
 if __name__ == "__main__":
-    # For simplicity, always on localhost:8765
-    loop = asyncio.get_event_loop()
-    start_server = websockets.serve(handler, '127.0.0.1', 8765)
-    loop.run_until_complete(start_server)
-    print("GhostShell Terminal backend running on ws://127.0.0.1:8765 (Docker mode)")
-    loop.run_forever()
+    print(f"[GhostShell BACKEND] Starte Terminal-WebSocket auf Port {PORT}")
+    asyncio.run(Server().start(host="127.0.0.1", port=PORT))

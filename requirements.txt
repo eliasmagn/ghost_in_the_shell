@@ -1,3 +1,4 @@
 PySide6
 websockets
+git+https://github.com/charliermarsh/terminalsrv.git
 docker
